@@ -75,6 +75,18 @@ class RkDevelopTool:
     self.flashInfoGotten = True
     return True
 
+  def addPartitionInformation(self, skippedPartitions : list, printResult : bool, partNumber : int, name : str, startSector : int, endSector : int, byteLength : int) -> None:
+    skippedText = ""
+    if name in skippedPartitions:
+      skippedText = " SKIPPED!"
+    else:
+      self.totalPartitionBytes += byteLength
+      partitionInfo = {'name': name, 'startSector': startSector, 'endSector': endSector, 'byteLength': byteLength}
+      self.partitions[partNumber] = partitionInfo
+    if printResult:
+      print("{:03d} name: {:18s} sectors {: 9d} to {: 12d} size {: 14d} Bytes{:s}".format(partNumber, name, startSector, endSector, byteLength, skippedText))
+
+
   def getPartitions(self, skippedPartitions : list = [], printResult : bool = True) -> bool:
     if not self.flashInfoGotten:
       if not self.getFlashInfo():
@@ -115,31 +127,27 @@ class RkDevelopTool:
       endSector = int(match.group(3))
       byteLength = int(match.group(4))
       name = match.group(5)
-      skipped = name in skippedPartitions
-      skippedText = ""
-      if skipped:
-        skippedText = " SKIPPED!"
-      else:
-        self.totalPartitionBytes += byteLength
-        partitionInfo = {'name': name, 'startSector': startSector, 'endSector': endSector, 'byteLength': byteLength}
-        self.partitions[partNumber] = partitionInfo
-      if printResult:
-        print("{:03d} name: {:15s} sectors {: 9d} to {: 9d} size {: 12d} Bytes{:s}".format(partNumber, name, startSector, endSector, byteLength, skippedText))
 
+      if partNumber == 0:
+        self.addPartitionInformation(skippedPartitions, printResult, -1, 'data_at_beginning', 0, startSector-1, self.blockSize * (startSector-1))
+      self.addPartitionInformation(skippedPartitions, printResult, partNumber, name, startSector, endSector, byteLength)
     return True
 
-  def readFlashBlock(self, startSector : int, size : int, filename : str):
-    try:
-      read = subprocess.Popen(['rkdeveloptool', 'read', str(startSector), str(size), filename], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except:
-      self.error("No longer able to run rkdeveloptool, this is odd")
-      return False
-    stdout, stderr = read.communicate()
-    if read.returncode != 0:
-      self.error("FAILED: To have rkdeveloptool perform read\n")
-      self.error(stdout.decode('utf-8'))
-      return False
-    return True
+  def readFlashBlock(self, startSector : int, size : int, filename : str, dryRun : bool):
+    if not dryRun:
+      try:
+        read = subprocess.Popen(['rkdeveloptool', 'read', str(startSector), str(size), filename], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+      except:
+        self.error("No longer able to run rkdeveloptool, this is odd")
+        return False
+      stdout, stderr = read.communicate()
+      if read.returncode != 0:
+        self.error("FAILED: To have rkdeveloptool perform read\n")
+        self.error(stdout.decode('utf-8'))
+        return False
+      return True
+    else:
+      print("    Non dry run would have run 'rkdeveloptool read {:d} {:d} {:s}'".format(startSector, size, filename))
 
 def secondsToString(seconds : int) -> str:
   if seconds <= 60:
@@ -158,19 +166,25 @@ def secondsToString(seconds : int) -> str:
 parser = argparse.ArgumentParser(description="A script for backing up a PineNote, may be useful for other devices using that can be accessed with rkdeveloptool")
 parser.add_argument('-b', '--block_size', default=1024*1024*1024, type=int, help="The max number of bytes to get at once, larger partitions/disks will be broken up into blocks according to this size to circumvent the 2GB limit")
 parser.add_argument('-t', '--type', required=True, choices=['partitions', 'disk'], help="The type of backup, partitions=attempt to get the individual partitions in separate files, disk=grap every byte including the partition table")
-
+parser.add_argument('-d', '--destination', default="", type=str, help="The destination path to write the images to")
+parser.add_argument('--skip-partition-table', action="store_true", help="Only for --type=partition, skip reading the bytes before the first partition")
+parser.add_argument('-u', '--skip-userdata-partition', action="store_true", help="Skip the partition named 'userdata', it is large and Android should be able to recreate it")
+parser.add_argument('-n', '--dry-run', action="store_true", help="Don't actually read bytes")
 args = parser.parse_args()
 
 readBlockSize = args.block_size
 type = args.type
-
-running_ = True
+destination = args.destination
+skippedPartitions = []
+if args.skip_partition_table:
+  skippedPartitions.append('data_at_beginning')
+if args.skip_userdata_partition:
+  skippedPartitions.append('userdata')
+dryRun = args.dry_run
 
 def handler(signum, frame):
-  global running_
   print("\nDetected Ctrl-C, your PineNote may become stuck and need to be powered off and placed in download mode again")
   print("Not all data have been downloaded")
-  running_ = False
 
 
 
@@ -185,9 +199,12 @@ readBlockSize = (int(readBlockSize/dut.blockSize)*dut.blockSize)
 startTime = time.time()
 bytesRead = 0
 
+
+
 def readBlockOfData(startSector : int, endSector : int, filename: str, totalBytes : int) -> None:
   global dut
   global bytesRead
+  global dryRun
 
   numberOfSectors : int = endSector-startSector+1
   byteSize : int = numberOfSectors * dut.blockSize
@@ -204,7 +221,7 @@ def readBlockOfData(startSector : int, endSector : int, filename: str, totalByte
     if bytesRead != 0 and timePassed>0:
       bytesPerSecond = bytesRead/timePassed
       if bytesPerSecond > 0: 
-        totalSeconds = dut.totalPartitionBytes/bytesPerSecond
+        totalSeconds = totalBytes/bytesPerSecond
         secondsRemaining = int(totalSeconds - timePassed)
         if secondsRemaining < 0:
           secondsRemaining = 0
@@ -218,54 +235,35 @@ def readBlockOfData(startSector : int, endSector : int, filename: str, totalByte
       outputName = "{:s}.{:04d}".format(filename, readCount)
 
     sector = startSector + int(localReadProgress/dut.blockSize)
-    print("Reading {: 12d} bytes from sector {: 9d} to {:15s} done: {:2.0f}% eta. {:s}".format(readSize, startSector, outputName, progress, etaString))
-    dut.readFlashBlock(sector, readSize, outputName)
+    print("Reading {: 12d} bytes from sector {: 9d} to {:15s} done: {:2.0f}% eta. {:s}".format(readSize, sector, outputName, progress, etaString))
+    dut.readFlashBlock(sector, readSize, outputName, dryRun)
     readCount += 1
     localReadProgress += readSize
     bytesRead += readSize
 
 if type=='disk':
-  block = 0
-  index = 0
-  bytes = dut.blockSize*dut.sectors
-  while(index<bytes):
-    progress = index * 100 / bytes
-    etaString = "N.A."
-    if (index != 0):
-      timePassed = time.time() - startTime
-      totalSeconds = bytes/(index/timePassed)
-      secondsRemaining = totalSeconds - timePassed
-      if secondsRemaining < 0:
-        secondsRemaining = 0
-      etaString = secondsToString(secondsRemaining)
-
-    if index % dut.blockSize != 0:
-      print("Internal error invalid offset!?")
-      os._exit(1)
-    startSector = int(index/dut.blockSize)
-
-    size = bytes - index
-    if size > readBlockSize:
-      size = readBlockSize
-    size = int(size/dut.blockSize)*dut.blockSize
-    
-    print("Reading {:d} bytes from sector {:d} done: {:.0f}% eta. {:s}".format(size, startSector, progress, etaString))
-    sys.stdout.flush()
-    filename = "diskimage.{:04d}".format(block)
-    if not dut.readFlashBlock(startSector, size, filename):
-      print("An error occurred while reading data")
-      os._exit(1)      
-
-    index += size
-    block += 1
-
+  print()
+  print()
+  print("=== Beginning to read all flash data ===")
+  name = "all_flash"
+  if destination != "":
+    name = destination+name
+  readBlockOfData(0, dut.sectors-1, name, dut.sectors*dut.blockSize)
 
 elif type=='partitions':
-  if dut.getPartitions(skippedPartitions=['userdata']):
+  if dut.getPartitions(skippedPartitions):
+    print()
+    print()
+    print("=== Beginning reading data as partitions ===")
     for partitionNumber in dut.partitions:
       partData = dut.partitions[partitionNumber]
-      name = "{:02d}_{:s}".format(partitionNumber, partData['name'])
+      if (partitionNumber >= 0):
+        name = "{:02d}_{:s}".format(partitionNumber, partData['name'])
+      else:
+        name = partData['name']
+      if destination != "":
+        name = destination+name
       readBlockOfData(partData['startSector'], partData['endSector'], name, dut.totalPartitionBytes)
   else:
-    print("!!! An error was encounterd !!!")
+    print("!!! An error was encountered !!!")
     os._exit(1)
