@@ -2,13 +2,15 @@
 
 This tool needs a working rkdeveloptool, a patched u-boot and the PineNote needs to be in download mode
 
+See [https://github.com/DorianRudolph/pinenotes](https://github.com/DorianRudolph/pinenotes) for instruction on getting those things.
+
 The tool can both download the entire "disk" and the partitions as individual files.
 
 Larger blocks of data will be split up to work around the 2GB limit in the current rkdeveloptool
 
 For partitions the large and somewhat useless userdata partition can be skipped
 
-See [https://github.com/DorianRudolph/pinenotes](https://github.com/DorianRudolph/pinenotes) for instruction on getting that
+
 
 ## Usage
 
