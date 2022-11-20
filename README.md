@@ -1,3 +1,15 @@
+# A tool for backing upeverything on a PineNote 
+
+This tool needs a working rkdeveloptool, a patched u-boot and the PineNote needs to be in download mode
+
+The tool can both download the entire "disk" and the partitions as individual files.
+
+Larger blocks of data will be split up to work around the 2GB limit in the current rkdeveloptool
+
+For partitions the large and somewhat useless userdata partition can be skipped
+
+See [https://github.com/DorianRudolph/pinenotes](https://github.com/DorianRudolph/pinenotes) for instruction on getting that
+
     usage: pinenote-backup.py [-h] [-b BLOCK_SIZE] -t {partitions,disk} [-d DESTINATION] [--skip-partition-table] [-u] [-n]
     
     A script for backing up a PineNote, may be useful for other devices using that can be accessed with rkdeveloptool
